@@ -26,12 +26,12 @@ class RestDataCollector:
                 response.raise_for_status()
                 return response
             except requests.exceptions.HTTPError as e:
-                # Se o erro for de "rate limit", esperamos e tentamos novamente
+
                 if e.response.status_code == 403 and 'rate limit' in e.response.text.lower():
                     print("!!! Atingiu o limite de requisições da API. Aguardando 60 segundos...")
                     time.sleep(60)
                     continue # Tenta novamente
-                # Outros erros 5xx
+
                 if 500 <= e.response.status_code < 600:
                     print(f"!!! Erro de servidor ({e.response.status_code}). Tentando novamente em 5s...")
                     time.sleep(5)
@@ -57,8 +57,9 @@ class RestDataCollector:
         print(f"Buscando a lista de {self.total_repos_to_fetch} repositórios via REST...")
         
         for page in range(1, total_pages + 1):
+
             params = {
-                'q': 'stars:>1', 'sort': 'stars', 'order': 'desc',
+                'q': 'language:java stars:>1', 'sort': 'stars', 'order': 'desc',
                 'per_page': self.repos_per_page, 'page': page
             }
             response = self._make_api_request(search_url, params=params)
@@ -72,92 +73,114 @@ class RestDataCollector:
         return repo_list
 
     def _fetch_detailed_data(self, repo_list):
-        """
-        Busca dados detalhados para cada repositório da lista.
-        """
-        detailed_repos = []
-        total_repos = len(repo_list)
-        
-        print(f"\nIniciando a coleta de dados detalhados para {total_repos} repositórios...")
-        
-        for i, repo in enumerate(repo_list):
-            repo_name = repo['full_name']
-            print(f"Coletando detalhes de '{repo_name}' ({i+1}/{total_repos})...")
-            
-            # 1. Obter dados de releases
-            releases_url = f"{self.base_api_url}/repos/{repo_name}/releases"
-            releases_response = self._make_api_request(releases_url, params={'per_page': 1})
-            release_count = 0
-            if releases_response and 'Link' in releases_response.headers:
-                # A API retorna o número total de páginas no cabeçalho 'Link'
-                try:
-                    link_header = releases_response.headers['Link']
-                    last_page_link = [s for s in link_header.split(',') if 'rel="last"' in s]
-                    if last_page_link:
-                        release_count = int(last_page_link[0].split('page=')[1].split('>')[0])
-                except (IndexError, ValueError):
-                    release_count = len(releases_response.json()) if releases_response else 0
-            elif releases_response:
-                release_count = len(releases_response.json())
+    """
+    Busca dados detalhados para cada repositório da lista,
+    coletando métricas de processo e de qualidade:
+    
+    Processo:
+      - Popularidade: estrelas
+      - Tamanho: LOC e comentários
+      - Atividade: releases
+      - Maturidade: idade em anos
+    
+    Qualidade (via CK):
+      - CBO
+      - DIT
+      - LCOM
+    """
+    detailed_repos = []
+    total_repos = len(repo_list)
 
-            # 2. Obter dados de contribuidores
-            contributors_url = f"{self.base_api_url}/repos/{repo_name}/contributors"
-            contributors_response = self._make_api_request(contributors_url, params={'per_page': 1, 'anon': 'true'})
-            contributor_count = 0
-            if contributors_response and 'Link' in contributors_response.headers:
-                try:
-                    link_header = contributors_response.headers['Link']
-                    last_page_link = [s for s in link_header.split(',') if 'rel="last"' in s]
-                    if last_page_link:
-                        contributor_count = int(last_page_link[0].split('page=')[1].split('>')[0])
-                except (IndexError, ValueError):
-                    contributor_count = len(contributors_response.json()) if contributors_response else 0
-            elif contributors_response:
-                contributor_count = len(contributors_response.json())
+    print(f"\nIniciando a coleta de dados detalhados para {total_repos} repositórios...")
 
-            # 3. Obter dados de pull requests aceitas
-            pulls_url = f"{self.base_api_url}/repos/{repo_name}/pulls"
-            pulls_response = self._make_api_request(pulls_url, params={'state': 'closed', 'per_page': 1})
-            merged_pulls_count = 0
-            if pulls_response and 'Link' in pulls_response.headers:
-                try:
-                    link_header = pulls_response.headers['Link']
-                    last_page_link = [s for s in link_header.split(',') if 'rel="last"' in s]
-                    if last_page_link:
-                        merged_pulls_count = int(last_page_link[0].split('page=')[1].split('>')[0])
-                except (IndexError, ValueError):
-                    # Se não conseguir parsear, conta manualmente os PRs mergeados
-                    all_pulls = self._make_api_request(pulls_url, params={'state': 'closed', 'per_page': 100})
-                    if all_pulls:
-                        merged_pulls_count = len([pr for pr in all_pulls.json() if pr.get('merged_at')])
-            elif pulls_response:
-                merged_pulls_count = len([pr for pr in pulls_response.json() if pr.get('merged_at')])
+    for i, repo in enumerate(repo_list):
+        repo_name = repo['full_name']
+        print(f"Coletando detalhes de '{repo_name}' ({i+1}/{total_repos})...")
 
-            # 4. Obter dados de issues fechadas
-            issues_url = f"{self.base_api_url}/repos/{repo_name}/issues"
-            closed_issues_response = self._make_api_request(issues_url, params={'state': 'closed', 'per_page': 1})
-            closed_issues_count = 0
-            if closed_issues_response and 'Link' in closed_issues_response.headers:
-                try:
-                    link_header = closed_issues_response.headers['Link']
-                    last_page_link = [s for s in link_header.split(',') if 'rel="last"' in s]
-                    if last_page_link:
-                        closed_issues_count = int(last_page_link[0].split('page=')[1].split('>')[0])
-                except (IndexError, ValueError):
-                    closed_issues_count = len(closed_issues_response.json()) if closed_issues_response else 0
-            elif closed_issues_response:
-                closed_issues_count = len(closed_issues_response.json())
+        # Caminho temporário para clonar
+        repo_dir = f"./temp_repos/{repo_name.replace('/', '_')}"
+        if os.path.exists(repo_dir):
+            shutil.rmtree(repo_dir)
 
-            # Adiciona os novos dados ao dicionário do repositório
-            repo['release_count'] = release_count
-            repo['contributor_count'] = contributor_count
-            repo['merged_pulls_count'] = merged_pulls_count
-            repo['closed_issues_count'] = closed_issues_count
-            detailed_repos.append(repo)
-            
-            time.sleep(0.5) # Pequeno delay para ser gentil com a API
-            
-        return detailed_repos
+        # Clonar repositório
+        clone_url = repo['clone_url']
+        subprocess.run(["git", "clone", "--depth", "1", clone_url, repo_dir], check=True)
+
+        # ----------------------------
+        # Métricas de Processo
+        # ----------------------------
+        popularity = repo.get('stargazers_count', 0)
+
+        # Releases (atividade)
+        releases_url = f"{self.base_api_url}/repos/{repo_name}/releases"
+        releases_response = self._make_api_request(releases_url, params={'per_page': 1})
+        release_count = 0
+        if releases_response and 'Link' in releases_response.headers:
+            try:
+                link_header = releases_response.headers['Link']
+                last_page_link = [s for s in link_header.split(',') if 'rel=\"last\"' in s]
+                if last_page_link:
+                    release_count = int(last_page_link[0].split('page=')[1].split('>')[0])
+            except (IndexError, ValueError):
+                release_count = len(releases_response.json()) if releases_response else 0
+        elif releases_response:
+            release_count = len(releases_response.json())
+
+        # Maturidade
+        created_at = repo.get('created_at')
+        maturity_years = 0
+        if created_at:
+            created_date = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
+            maturity_years = round((datetime.utcnow() - created_date).days / 365, 2)
+
+        # ----------------------------
+        # Métricas de Qualidade (CK)
+        # ----------------------------
+        ck_output_dir = f"{repo_dir}_metrics"
+        os.makedirs(ck_output_dir, exist_ok=True)
+
+        subprocess.run([
+            "java", "-jar",
+            "/caminho/para/ck/target/ck-0.7.1-SNAPSHOT-jar-with-dependencies.jar",
+            repo_dir,
+            ck_output_dir
+        ], check=True)
+
+        # Ler métricas de classe
+        class_metrics_path = os.path.join(ck_output_dir, "class.csv")
+        loc, loc_comments, cbo, dit, lcom = 0, 0, 0, 0, 0
+        if os.path.exists(class_metrics_path):
+            df = pd.read_csv(class_metrics_path)
+
+            # Processo
+            loc = df["loc"].sum()
+            loc_comments = df["locComment"].sum()
+
+            # Qualidade -> média por classe
+            cbo = df["cbo"].mean()
+            dit = df["dit"].mean()
+            lcom = df["lcom"].mean()
+
+        # Salvar dados no dicionário
+        repo['popularity'] = int(popularity)
+        repo['release_count'] = int(release_count)
+        repo['maturity_years'] = maturity_years
+        repo['loc'] = int(loc)
+        repo['loc_comments'] = int(loc_comments)
+
+        repo['cbo'] = round(cbo, 2)
+        repo['dit'] = round(dit, 2)
+        repo['lcom'] = round(lcom, 2)
+
+        detailed_repos.append(repo)
+
+        # Limpa diretórios temporários
+        shutil.rmtree(repo_dir, ignore_errors=True)
+        shutil.rmtree(ck_output_dir, ignore_errors=True)
+
+        time.sleep(1)  # delay para respeitar API
+
+    return detailed_repos
 
     def _parse_data(self):
         """

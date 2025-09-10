@@ -17,8 +17,8 @@ HEADERS = {
     'User-Agent': 'GitHub-Lab-Experiment/1.0'
 }
 
-REPOS_PER_PAGE = 1
-TOTAL_REPOS_TO_FETCH = 1000
+REPOS_PER_PAGE = 10
+TOTAL_REPOS_TO_FETCH = 50
 
 OUTPUT_DIR = "output"
 DATA_DIR = os.path.join(OUTPUT_DIR, "data")
